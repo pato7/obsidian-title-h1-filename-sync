@@ -35,20 +35,21 @@ Jeho úlohou je obojsmerná synchronizácia medzi:
      git checkout main
      git pull origin main
      ```
-4. **Vytvorenie dedikovanej vetvy:**
+4. **Vytvorenie dedikovanej vetvy a OKAMŽITÉ vytvorenie Pull Requestu:**
    - Každá zmena/funkcia/oprava začína novou branch z aktuálneho `main`:
      ```bash
      git checkout -b feat/<nazov-zmeny>   # alebo fix/<nazov-opravy>
      ```
-5. **Postupný update a commitovanie:**
-   - Počas vývoja commituj zmeny do tejto aktívnej vetvy a pushuj ich na GitHub:
+   - **Ihneď po vytvorení vetvy (alebo pri prvom pushnutí zmien) vytvor Pull Request do `main` cez GitHub CLI (`gh pr create`), aby používateľ od samého začiatku práce videl otvorený PR na GitHube:**
      ```bash
      git push -u origin <nazov-vetvy>
+     gh pr create --base main --head <nazov-vetvy> --title "..." --body "..."
      ```
-6. **Vytvorenie Pull Requestu IBA na pokyn:**
-   - **NIKDY nevytváraj Pull Request automaticky.**
-   - Pull Request do vetvy `main` vytvoríš **VÝHRADNE VTEDY**, keď používateľ povie, že ideme na produkciu (napr. *"ideme na produkciu"*, *"vytvor PR"*, *"sprav pull request"*).
-   - Následne používateľ Pull Request sám skontroluje a schváli.
+5. **Postupný update a commitovanie:**
+   - Počas vývoja priebežne commituj zmeny a pushuj ich do tejto vetvy (`git push origin <nazov-vetvy>`). Všetky nové commity sa automaticky premietnu do otvoreného Pull Requestu.
+6. **Schválenie a merge robí používateľ:**
+   - Keď je etapa práce hotová, agent informuje používateľa a odkáže ho na otvorený Pull Request.
+   - Používateľ Pull Request skontroluje a na GitHube ho mergne.
 7. **Mazanie vetiev po mergnutí (Branch Cleanup):**
    - Po schválení a zlúčení (merge) Pull Requestu do `main` sa vytvorená vetva **vždy zmaže lokálne aj na GitHube**, aby bol GitHub aj lokálny repozitár stále čistý:
      ```bash
