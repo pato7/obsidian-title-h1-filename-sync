@@ -18,8 +18,9 @@ Refer to `AGENTS.md` in the repository root for the full agent guidelines and wo
 2. **Check for open PRs before branching**: Always run `gh pr list --state open` before creating a branch. If an open unapproved PR exists, stop and inform the user. If none exist, inform the user and proceed.
 3. **Always start from latest `main`**: Run `git checkout main && git pull origin main` before creating a new branch.
 4. **Pull Requests ONLY on user instruction**: Never create a PR automatically. Only create a PR when the user explicitly requests to go to production.
-5. **Version Bumping**: Always increment the version in `manifest.json` and `package.json` on any code change.
-6. **Local Vault Sync**: Always copy built `main.js`, `manifest.json`, and `data.json` to the local Obsidian vault plugin folder.
+5. **Branch Cleanup after Merge**: Always delete the feature branch both locally and on GitHub after merging into `main` to keep both environments clean.
+6. **Version Bumping**: Always increment the version in `manifest.json` and `package.json` on any code change.
+7. **Local Vault Sync**: Always copy built `main.js`, `manifest.json`, and `data.json` to the local Obsidian vault plugin folder.
 
 ## Constraints
 - Do not add runtime dependencies beyond the `obsidian` API; the existing dev-only build tooling (typescript/esbuild) is already established and may be used.

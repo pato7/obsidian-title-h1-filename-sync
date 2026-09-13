@@ -49,9 +49,21 @@ Jeho úlohou je obojsmerná synchronizácia medzi:
    - **NIKDY nevytváraj Pull Request automaticky.**
    - Pull Request do vetvy `main` vytvoríš **VÝHRADNE VTEDY**, keď používateľ povie, že ideme na produkciu (napr. *"ideme na produkciu"*, *"vytvor PR"*, *"sprav pull request"*).
    - Následne používateľ Pull Request sám skontroluje a schváli.
-7. **Pravidlo navýšenia verzie (Version Bump):**
+7. **Mazanie vetiev po mergnutí (Branch Cleanup):**
+   - Po schválení a zlúčení (merge) Pull Requestu do `main` sa vytvorená vetva **vždy zmaže lokálne aj na GitHube**, aby bol GitHub aj lokálny repozitár stále čistý:
+     ```bash
+     # Prepnutie na main a stiahnutie zlúčených zmien
+     git checkout main
+     git pull origin main
+     # Zmazanie lokálnej vetvy
+     git branch -d <nazov-vetvy>
+     # Zmazanie vzdialenej vetvy na GitHube (ak ju nezmazal PR merge automaticky)
+     git push origin --delete <nazov-vetvy>
+     git fetch --prune
+     ```
+8. **Pravidlo navýšenia verzie (Version Bump):**
    - Pri **každej** úprave alebo zmene kódu/pluginu sa **musí zvýšiť verzia** v `manifest.json` aj v `package.json` (napr. `1.4.1` -> `1.4.2`).
-8. **Synchronizácia s lokálnym vaultom Obsidianu:**
+9. **Synchronizácia s lokálnym vaultom Obsidianu:**
    - Po zostavení (`npm run build`) skopíruj aktuálny `main.js` a `manifest.json` do priečinka nainštalovaného pluginu v lokálnom vaulte Obsidianu:
      `c:\Users\pato\My Drive\Obsidian\.obsidian\plugins\title-h1-filename-sync\`
 
