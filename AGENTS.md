@@ -99,3 +99,15 @@ Jeho úlohou je obojsmerná synchronizácia medzi:
 2. Skontroluj, či `main.js` neobsahuje syntaktické chyby.
 3. Over, či sa verzia v `manifest.json` a `package.json` zhoduje a bola navýšená.
 4. Skopíruj výstup do lokálneho trezoru Obsidianu.
+
+---
+
+## 5. Priorita pri kontrole kódu (Review Priorities)
+
+Pri review a analýze kódu zameraj pozornosť na:
+- **Zamedzenie strate dát:** Žiadna zmena nesmie spôsobiť stratu alebo poškodenie obsahu poznámky.
+- **Správna sanitizácia názvov súborov:** Bezpečné odstraňovanie nepovolených znakov pre OS (Windows, macOS, Linux).
+- **Prevencia race conditions:** Správne poradie `processFrontMatter` a `renameFile`, ošetrenie zámkov súboru (`EBUSY`).
+- **Prevencia rekurzie udalostí:** Nekonečné slučky medzi `vault.on('rename')`, `metadataCache.on('changed')` a `syncFile`.
+- **Udržiavanie čistého stavu:** `syncingFiles` a `lastKnownState` musia byť vždy konzistentné aj po premenovaní alebo zmazaní súboru.
+
