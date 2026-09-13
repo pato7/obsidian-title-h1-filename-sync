@@ -1,9 +1,9 @@
 {
   "id": "title-h1-filename-sync",
   "name": "Title H1 Filename Sync",
-  "version": "1.4.0",
+  "version": "1.4.4",
   "minAppVersion": "0.15.0",
   "description": "Synchronizes YAML frontmatter title with the first H1 heading bidirectionally, and updates the filename to match.",
-  "author": "Antigravity",
+  "author": "Patrik Sedmina",
   "isDesktopOnly": false
 }
