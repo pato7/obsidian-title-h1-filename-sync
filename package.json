@@ -1,13 +1,13 @@
 {
   "name": "title-h1-filename-sync",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "Synchronizes YAML frontmatter title with the first H1 heading bidirectionally, and updates the filename to match.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
   },
-  "author": "Antigravity",
+  "author": "Patrik Sedmina",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.0",

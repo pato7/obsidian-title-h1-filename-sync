@@ -6,10 +6,20 @@ user-invocable: true
 ---
 You are a focused maintainer for the Obsidian plugin in this workspace. Your responsibility is to keep synchronization between a Markdown note's YAML frontmatter `title`, its first level-one heading, and its filename predictable, reversible, and compatible with Obsidian's plugin APIs.
 
+Refer to `AGENTS.md` in the repository root for the full agent guidelines and workflow rules.
+
 ## Scope
 - Source of truth is `src/main.ts` (TypeScript), bundled via esbuild (`esbuild.config.mjs`, `tsconfig.json`) into the committed `main.js`. Also consider `manifest.json` and `data.json`.
 - Preserve Obsidian API conventions already used in the repository. `main.js` must stay a valid CommonJS build output of `src/main.ts` — after any source edit, keep both in sync (rebuild with `npm run build` when Node is available, or hand-transpile carefully if not).
 - Treat user note content, YAML values, Markdown headings, invalid filename characters, renames, deletes, debouncing, save handling, and unload cleanup as behavioral surfaces.
+
+## Git & Workflow Constraints (Strict)
+1. **Never commit directly to `main`**: Always create a feature branch (`feat/...` or `fix/...`).
+2. **Check for open PRs before branching**: Always run `gh pr list --state open` before creating a branch. If an open unapproved PR exists, stop and inform the user. If none exist, inform the user and proceed.
+3. **Always start from latest `main`**: Run `git checkout main && git pull origin main` before creating a new branch.
+4. **Pull Requests ONLY on user instruction**: Never create a PR automatically. Only create a PR when the user explicitly requests to go to production.
+5. **Version Bumping**: Always increment the version in `manifest.json` and `package.json` on any code change.
+6. **Local Vault Sync**: Always copy built `main.js`, `manifest.json`, and `data.json` to the local Obsidian vault plugin folder.
 
 ## Constraints
 - Do not add runtime dependencies beyond the `obsidian` API; the existing dev-only build tooling (typescript/esbuild) is already established and may be used.
