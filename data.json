@@ -3,5 +3,6 @@
   "syncOnSave": true,
   "syncFilename": true,
   "syncTitle": true,
-  "syncFromFilename": false
+  "syncFromFilename": false,
+  "saveSyncMaster": "h1"
 }

@@ -10,6 +10,8 @@ import {
   TFile,
 } from "obsidian";
 
+export type SaveSyncMaster = "h1" | "filename";
+
 interface TitleH1FilenameSyncSettings {
   disallowedChars: string;
   syncOnSave: boolean;
@@ -17,6 +19,7 @@ interface TitleH1FilenameSyncSettings {
   syncTitle: boolean;
   showRenameNotice: boolean;
   syncFromFilename: boolean;
+  saveSyncMaster: SaveSyncMaster;
 }
 
 const DEFAULT_SETTINGS: TitleH1FilenameSyncSettings = {
@@ -26,6 +29,7 @@ const DEFAULT_SETTINGS: TitleH1FilenameSyncSettings = {
   syncTitle: true,
   showRenameNotice: false,
   syncFromFilename: false,
+  saveSyncMaster: "h1",
 };
 
 interface FileTitleState {
@@ -129,7 +133,8 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         }
 
         // Check if basename actually changed (not just moved to another directory)
-        const oldFilename = oldPath.split("/").pop() || "";
+        const normalizedOldPath = oldPath.replace(/\\/g, "/");
+        const oldFilename = normalizedOldPath.split("/").pop() || "";
         const oldBasename = oldFilename.endsWith(".md") ? oldFilename.slice(0, -3) : oldFilename;
         const newBasename = file.basename;
 
@@ -361,6 +366,43 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
       }
     }
 
+    // When manually saving (force = true) with "filename" as master, sync H1 and title from filename
+    if (force && this.settings.saveSyncMaster === "filename" && !isUntitledFile) {
+      const originalPath = targetFile.path;
+      this.syncingFiles.add(originalPath);
+
+      try {
+        const masterText = targetFile.basename;
+        let h1Updated = false;
+        let titleUpdated = false;
+
+        if (this.settings.syncTitle && currentTitle !== masterText) {
+          await this.updateFrontMatterTitle(targetFile, masterText);
+          titleUpdated = true;
+        }
+
+        if (currentH1 !== masterText) {
+          const freshCache = titleUpdated ? this.app.metadataCache.getFileCache(targetFile) : fileCache;
+          await this.updateH1InFile(targetFile, freshCache, masterText);
+          h1Updated = true;
+        }
+
+        const finalTitle = titleUpdated ? masterText : currentTitle;
+        const finalH1 = h1Updated ? masterText : currentH1;
+        this.lastKnownState.set(targetFile.path, { title: finalTitle, h1: finalH1 });
+
+        if (h1Updated || titleUpdated) {
+          new Notice(`Updated note H1 and title from filename "${masterText}"`);
+        }
+      } catch (err) {
+        console.error("Title H1 Filename Sync: error updating from filename on save:", err);
+      } finally {
+        this.syncingFiles.delete(originalPath);
+        this.syncingFiles.delete(targetFile.path);
+      }
+      return;
+    }
+
     const lastKnown = this.lastKnownState.get(targetFile.path) || { title: "", h1: "" };
 
     // Check changes depending on settings
@@ -377,11 +419,11 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     // Conditions to sync filename:
     // 1. Untitled note with expected name -> ALWAYS sync filename!
     // 2. Title or H1 changed -> sync filename!
-    // 3. User pressed Ctrl+S (force = true) -> sync filename!
+    // 3. User pressed Ctrl+S (force = true) and H1 is master -> sync filename!
     const shouldSyncFilename = this.settings.syncFilename && Boolean(expectedName) && (
       (isUntitledFile && filenameOutOfSync) ||
       ((titleChanged || h1Changed) && filenameOutOfSync) ||
-      (force && filenameOutOfSync)
+      (force && this.settings.saveSyncMaster !== "filename" && filenameOutOfSync)
     );
 
     // Conditions to sync title / H1:
@@ -694,6 +736,20 @@ class TitleH1FilenameSyncSettingTab extends PluginSettingTab {
           this.plugin.settings.syncOnSave = value;
           await this.plugin.saveSettings();
         })
+      );
+
+    new Setting(containerEl)
+      .setName("Save sync master (Ctrl+S)")
+      .setDesc('Determines which property is the master when pressing Ctrl+S or Cmd+S if headings and filename differ: "H1 / title" updates filename from H1; "filename" updates H1 and title from filename.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("h1", "H1 / title")
+          .addOption("filename", "filename")
+          .setValue(this.plugin.settings.saveSyncMaster || "h1")
+          .onChange(async (value) => {
+            this.plugin.settings.saveSyncMaster = value as SaveSyncMaster;
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl)
