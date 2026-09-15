@@ -195,17 +195,11 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
           // If syncFromFilename is enabled, check if note H1 needs to be updated to match filename
           if (this.settings?.syncFromFilename && !this.isUntitled(activeFile.basename)) {
-            const isRecentlyRenamed = this.recentlyRenamedFiles.has(activeFile.path);
-            const isFilenameMaster = this.settings.saveSyncMaster === "filename";
-
-            if (isRecentlyRenamed || isFilenameMaster) {
-              this.recentlyRenamedFiles.delete(activeFile.path);
-              this.getLiveTitleAndH1(activeFile).then(({ h1 }) => {
-                if (h1 && h1 !== activeFile.basename) {
-                  this.syncTitleAndH1FromFilename(activeFile, activeFile.basename);
-                }
-              });
-            }
+            this.getLiveTitleAndH1(activeFile).then(({ h1 }) => {
+              if (h1 && h1 !== activeFile.basename) {
+                this.syncTitleAndH1FromFilename(activeFile, activeFile.basename);
+              }
+            });
           }
         } else {
           this.currentActiveFilePath = null;
@@ -256,7 +250,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
         // If option is enabled, sync title and H1 from filename
         if (this.settings?.syncFromFilename) {
-          await this.syncTitleAndH1FromFilename(file, newBasename);
+          await this.syncTitleAndH1FromFilename(file, newBasename, oldPath);
         }
       })
     );
@@ -655,7 +649,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     }
   }
 
-  async syncTitleAndH1FromFilename(file: TFile, newTitle: string): Promise<void> {
+  async syncTitleAndH1FromFilename(file: TFile, newTitle: string, oldPath?: string): Promise<void> {
     if (this.syncingFiles.has(file.path)) return;
 
     this.syncingFiles.add(file.path);
@@ -663,9 +657,14 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     try {
       let content = "";
       const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-      const isEditorOpen = activeView && activeView.file && activeView.file.path === file.path && activeView.editor;
+      const isEditorOpen = Boolean(
+        activeView &&
+        activeView.file &&
+        (activeView.file.path === file.path || (oldPath && activeView.file.path === oldPath)) &&
+        activeView.editor
+      );
 
-      if (isEditorOpen && activeView.editor) {
+      if (isEditorOpen && activeView?.editor) {
         content = activeView.editor.getValue();
       }
 
@@ -687,7 +686,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
       const { newContent, changed } = updateContentTitleAndH1(content, newTitle, this.settings.syncTitle);
 
       if (changed) {
-        if (isEditorOpen && activeView.editor) {
+        if (isEditorOpen && activeView?.editor) {
           activeView.editor.setValue(newContent);
         }
         const fresh = this.app.vault.getAbstractFileByPath(file.path);
@@ -700,7 +699,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         h1: newTitle,
       });
 
-      if (changed && this.settings.showRenameNotice) {
+      if (changed) {
         new Notice(`Updated note H1 and title to match filename "${newTitle}"`);
       }
     } catch (err) {
