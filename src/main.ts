@@ -59,6 +59,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
   lastKnownState = new Map<string, FileTitleState>();
   syncingFiles = new Set<string>();
   debounceTimeouts = new Map<string, number>();
+  recentlyDeleted = new Map<string, { time: number; parent: string; basename: string }>();
   currentActiveFilePath: string | null = null;
 
   private originalExecuteCommand?: CommandsInternal["executeCommand"];
@@ -151,6 +152,23 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("delete", (file: TAbstractFile) => {
+        if (file instanceof TFile && file.extension === "md") {
+          const parentPath = file.parent ? file.parent.path : "";
+          this.recentlyDeleted.set(file.path, {
+            time: Date.now(),
+            parent: parentPath,
+            basename: file.basename,
+          });
+
+          // Clean up entries older than 10 seconds
+          const now = Date.now();
+          for (const [p, data] of this.recentlyDeleted.entries()) {
+            if (now - data.time > 10000) {
+              this.recentlyDeleted.delete(p);
+            }
+          }
+        }
+
         this.lastKnownState.delete(file.path);
 
         if (this.debounceTimeouts.has(file.path)) {
@@ -160,6 +178,43 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
         if (this.currentActiveFilePath === file.path) {
           this.currentActiveFilePath = null;
+        }
+      })
+    );
+
+    // Register create event to detect external file renames (e.g. in Windows Explorer)
+    this.registerEvent(
+      this.app.vault.on("create", async (file: TAbstractFile) => {
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        if (this.syncingFiles.has(file.path)) return;
+
+        const now = Date.now();
+        const parentPath = file.parent ? file.parent.path : "";
+        let matchedOldPath: string | null = null;
+        let matchedOldBasename: string | null = null;
+
+        for (const [oldPath, data] of this.recentlyDeleted.entries()) {
+          if (now - data.time < 5000 && data.parent === parentPath && oldPath !== file.path) {
+            matchedOldPath = oldPath;
+            matchedOldBasename = data.basename;
+            this.recentlyDeleted.delete(oldPath);
+            break;
+          }
+        }
+
+        if (!matchedOldPath) return;
+
+        console.log(`Title H1 Filename Sync: detected external rename from "${matchedOldPath}" to "${file.path}"`);
+
+        // If option is enabled, sync title and H1 from the new filename
+        if (this.settings?.syncFromFilename && !this.isUntitled(file.basename)) {
+          if (matchedOldBasename !== file.basename) {
+            // Small pause for file system locks to release
+            await new Promise((res) => window.setTimeout(res, 300));
+            const fresh = this.app.vault.getAbstractFileByPath(file.path);
+            const target = fresh instanceof TFile ? fresh : file;
+            await this.syncTitleAndH1FromFilename(target, target.basename);
+          }
         }
       })
     );
@@ -235,6 +290,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     this.lastKnownState = new Map();
     this.syncingFiles.clear();
     this.debounceTimeouts.clear();
+    this.recentlyDeleted.clear();
   }
 
   private trySyncOnSave(): void {
