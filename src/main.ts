@@ -53,11 +53,6 @@ interface AppWithCommands extends App {
   commands: CommandsInternal;
 }
 
-function getParentDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/");
-  const lastSlash = normalized.lastIndexOf("/");
-  return lastSlash !== -1 ? normalized.substring(0, lastSlash) : "";
-}
 
 function updateContentTitleAndH1(
   content: string,
@@ -154,8 +149,6 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
   lastKnownState = new Map<string, FileTitleState>();
   syncingFiles = new Set<string>();
   debounceTimeouts = new Map<string, number>();
-  recentlyDeleted = new Map<string, { time: number; parentDir: string; basename: string }>();
-  recentlyRenamedFiles = new Set<string>();
   currentActiveFilePath: string | null = null;
 
   private originalExecuteCommand?: CommandsInternal["executeCommand"];
@@ -192,15 +185,6 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         if (activeFile && activeFile.extension === "md") {
           this.currentActiveFilePath = activeFile.path;
           this.initializeFileState(activeFile);
-
-          // If syncFromFilename is enabled, check if note H1 needs to be updated to match filename
-          if (this.settings?.syncFromFilename && !this.isUntitled(activeFile.basename)) {
-            this.getLiveTitleAndH1(activeFile).then(({ h1 }) => {
-              if (h1 && h1 !== activeFile.basename) {
-                this.syncTitleAndH1FromFilename(activeFile, activeFile.basename);
-              }
-            });
-          }
         } else {
           this.currentActiveFilePath = null;
         }
@@ -257,23 +241,6 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("delete", (file: TAbstractFile) => {
-        if (file instanceof TFile && file.extension === "md") {
-          const parentDir = getParentDir(file.path);
-          this.recentlyDeleted.set(file.path, {
-            time: Date.now(),
-            parentDir: parentDir,
-            basename: file.basename,
-          });
-
-          // Clean up entries older than 20 seconds
-          const now = Date.now();
-          for (const [p, data] of this.recentlyDeleted.entries()) {
-            if (now - data.time > 20000) {
-              this.recentlyDeleted.delete(p);
-            }
-          }
-        }
-
         this.lastKnownState.delete(file.path);
 
         if (this.debounceTimeouts.has(file.path)) {
@@ -283,44 +250,6 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
         if (this.currentActiveFilePath === file.path) {
           this.currentActiveFilePath = null;
-        }
-      })
-    );
-
-    // Register create event to detect external file renames (e.g. in Total Commander or Windows Explorer)
-    this.registerEvent(
-      this.app.vault.on("create", async (file: TAbstractFile) => {
-        if (!(file instanceof TFile) || file.extension !== "md") return;
-        if (this.syncingFiles.has(file.path)) return;
-
-        const now = Date.now();
-        const parentDir = getParentDir(file.path);
-        let matchedOldPath: string | null = null;
-        let matchedOldBasename: string | null = null;
-
-        for (const [oldPath, data] of this.recentlyDeleted.entries()) {
-          if (now - data.time < 20000 && data.parentDir === parentDir && oldPath !== file.path) {
-            matchedOldPath = oldPath;
-            matchedOldBasename = data.basename;
-            this.recentlyDeleted.delete(oldPath);
-            break;
-          }
-        }
-
-        if (!matchedOldPath) return;
-
-        console.log(`Title H1 Filename Sync: detected external rename from "${matchedOldPath}" to "${file.path}"`);
-        this.recentlyRenamedFiles.add(file.path);
-
-        // If option is enabled, sync title and H1 from the new filename
-        if (this.settings?.syncFromFilename && !this.isUntitled(file.basename)) {
-          if (matchedOldBasename !== file.basename) {
-            // Small pause for file system locks to release
-            await new Promise((res) => window.setTimeout(res, 300));
-            const fresh = this.app.vault.getAbstractFileByPath(file.path);
-            const target = fresh instanceof TFile ? fresh : file;
-            await this.syncTitleAndH1FromFilename(target, target.basename);
-          }
         }
       })
     );
@@ -396,8 +325,6 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     this.lastKnownState = new Map();
     this.syncingFiles.clear();
     this.debounceTimeouts.clear();
-    this.recentlyDeleted.clear();
-    this.recentlyRenamedFiles.clear();
   }
 
   private trySyncOnSave(): void {
@@ -531,38 +458,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
     // When manually saving (force = true) with "filename" as master, sync H1 and title from filename
     if (force && this.settings.saveSyncMaster === "filename" && !isUntitledFile) {
-      const originalPath = targetFile.path;
-      this.syncingFiles.add(originalPath);
-
-      try {
-        const masterText = targetFile.basename;
-        let h1Updated = false;
-        let titleUpdated = false;
-
-        if (this.settings.syncTitle && currentTitle !== masterText) {
-          await this.updateFrontMatterTitle(targetFile, masterText);
-          titleUpdated = true;
-        }
-
-        if (currentH1 !== masterText) {
-          const freshCache = titleUpdated ? this.app.metadataCache.getFileCache(targetFile) : fileCache;
-          await this.updateH1InFile(targetFile, freshCache, masterText);
-          h1Updated = true;
-        }
-
-        const finalTitle = titleUpdated ? masterText : currentTitle;
-        const finalH1 = h1Updated ? masterText : currentH1;
-        this.lastKnownState.set(targetFile.path, { title: finalTitle, h1: finalH1 });
-
-        if (h1Updated || titleUpdated) {
-          new Notice(`Updated note H1 and title from filename "${masterText}"`);
-        }
-      } catch (err) {
-        console.error("Title H1 Filename Sync: error updating from filename on save:", err);
-      } finally {
-        this.syncingFiles.delete(originalPath);
-        this.syncingFiles.delete(targetFile.path);
-      }
+      await this.syncTitleAndH1FromFilename(targetFile, targetFile.basename);
       return;
     }
 
@@ -898,7 +794,7 @@ class TitleH1FilenameSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Update title and H1 on filename change")
-      .setDesc("If enabled, renaming a file will automatically update the note's H1 heading and frontmatter title to match the new filename.")
+      .setDesc("If enabled, renaming a file inside Obsidian will automatically update the note's H1 heading and frontmatter title to match the new filename.")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.syncFromFilename).onChange(async (value) => {
           this.plugin.settings.syncFromFilename = value;
