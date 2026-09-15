@@ -53,13 +53,109 @@ interface AppWithCommands extends App {
   commands: CommandsInternal;
 }
 
+function getParentDir(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  return lastSlash !== -1 ? normalized.substring(0, lastSlash) : "";
+}
+
+function updateContentTitleAndH1(
+  content: string,
+  newTitle: string,
+  syncTitle: boolean
+): { newContent: string; changed: boolean } {
+  let lines = content.split(/\r?\n/);
+  let changed = false;
+
+  // 1. Handle Frontmatter title if syncTitle is enabled
+  if (syncTitle) {
+    if (lines[0]?.trim() === "---") {
+      let closingIndex = -1;
+      for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === "---") {
+          closingIndex = i;
+          break;
+        }
+      }
+
+      if (closingIndex !== -1) {
+        let titleLineIndex = -1;
+        for (let i = 1; i < closingIndex; i++) {
+          if (/^title:\s*/.test(lines[i])) {
+            titleLineIndex = i;
+            break;
+          }
+        }
+
+        if (titleLineIndex !== -1) {
+          const currentValMatch = lines[titleLineIndex].match(/^title:\s*(?:"([^"]*)"|'([^']*)'|(.*))$/);
+          const currentVal = (currentValMatch?.[1] || currentValMatch?.[2] || currentValMatch?.[3] || "").trim();
+          if (currentVal !== newTitle) {
+            lines[titleLineIndex] = `title: ${newTitle}`;
+            changed = true;
+          }
+        } else {
+          lines.splice(closingIndex, 0, `title: ${newTitle}`);
+          changed = true;
+        }
+      }
+    } else {
+      lines.unshift("---", `title: ${newTitle}`, "---");
+      changed = true;
+    }
+  }
+
+  // 2. Handle first H1 in body
+  let bodyStartIndex = 0;
+  if (lines[0]?.trim() === "---") {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === "---") {
+        bodyStartIndex = i + 1;
+        break;
+      }
+    }
+  }
+
+  let h1Index = -1;
+  for (let i = bodyStartIndex; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith("# ")) {
+      h1Index = i;
+      break;
+    }
+  }
+
+  if (h1Index !== -1) {
+    const match = lines[h1Index].match(/^(\s*)#\s/);
+    const prefix = match ? match[1] : "";
+    const expectedH1 = `${prefix}# ${newTitle}`;
+    if (lines[h1Index] !== expectedH1) {
+      lines[h1Index] = expectedH1;
+      changed = true;
+    }
+  } else {
+    if (bodyStartIndex === 0) {
+      if (lines.length === 1 && lines[0].trim() === "") {
+        lines[0] = `# ${newTitle}`;
+      } else {
+        lines.splice(0, 0, `# ${newTitle}`, "");
+      }
+    } else {
+      lines.splice(bodyStartIndex, 0, "", `# ${newTitle}`);
+    }
+    changed = true;
+  }
+
+  return { newContent: lines.join("\n"), changed };
+}
+
 export default class TitleH1FilenameSyncPlugin extends Plugin {
   settings!: TitleH1FilenameSyncSettings;
 
   lastKnownState = new Map<string, FileTitleState>();
   syncingFiles = new Set<string>();
   debounceTimeouts = new Map<string, number>();
-  recentlyDeleted = new Map<string, { time: number; parent: string; basename: string }>();
+  recentlyDeleted = new Map<string, { time: number; parentDir: string; basename: string }>();
+  recentlyRenamedFiles = new Set<string>();
   currentActiveFilePath: string | null = null;
 
   private originalExecuteCommand?: CommandsInternal["executeCommand"];
@@ -96,6 +192,21 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         if (activeFile && activeFile.extension === "md") {
           this.currentActiveFilePath = activeFile.path;
           this.initializeFileState(activeFile);
+
+          // If syncFromFilename is enabled, check if note H1 needs to be updated to match filename
+          if (this.settings?.syncFromFilename && !this.isUntitled(activeFile.basename)) {
+            const isRecentlyRenamed = this.recentlyRenamedFiles.has(activeFile.path);
+            const isFilenameMaster = this.settings.saveSyncMaster === "filename";
+
+            if (isRecentlyRenamed || isFilenameMaster) {
+              this.recentlyRenamedFiles.delete(activeFile.path);
+              this.getLiveTitleAndH1(activeFile).then(({ h1 }) => {
+                if (h1 && h1 !== activeFile.basename) {
+                  this.syncTitleAndH1FromFilename(activeFile, activeFile.basename);
+                }
+              });
+            }
+          }
         } else {
           this.currentActiveFilePath = null;
         }
@@ -153,17 +264,17 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", (file: TAbstractFile) => {
         if (file instanceof TFile && file.extension === "md") {
-          const parentPath = file.parent ? file.parent.path : "";
+          const parentDir = getParentDir(file.path);
           this.recentlyDeleted.set(file.path, {
             time: Date.now(),
-            parent: parentPath,
+            parentDir: parentDir,
             basename: file.basename,
           });
 
-          // Clean up entries older than 10 seconds
+          // Clean up entries older than 20 seconds
           const now = Date.now();
           for (const [p, data] of this.recentlyDeleted.entries()) {
-            if (now - data.time > 10000) {
+            if (now - data.time > 20000) {
               this.recentlyDeleted.delete(p);
             }
           }
@@ -182,19 +293,19 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
       })
     );
 
-    // Register create event to detect external file renames (e.g. in Windows Explorer)
+    // Register create event to detect external file renames (e.g. in Total Commander or Windows Explorer)
     this.registerEvent(
       this.app.vault.on("create", async (file: TAbstractFile) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
         if (this.syncingFiles.has(file.path)) return;
 
         const now = Date.now();
-        const parentPath = file.parent ? file.parent.path : "";
+        const parentDir = getParentDir(file.path);
         let matchedOldPath: string | null = null;
         let matchedOldBasename: string | null = null;
 
         for (const [oldPath, data] of this.recentlyDeleted.entries()) {
-          if (now - data.time < 5000 && data.parent === parentPath && oldPath !== file.path) {
+          if (now - data.time < 20000 && data.parentDir === parentDir && oldPath !== file.path) {
             matchedOldPath = oldPath;
             matchedOldBasename = data.basename;
             this.recentlyDeleted.delete(oldPath);
@@ -205,6 +316,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         if (!matchedOldPath) return;
 
         console.log(`Title H1 Filename Sync: detected external rename from "${matchedOldPath}" to "${file.path}"`);
+        this.recentlyRenamedFiles.add(file.path);
 
         // If option is enabled, sync title and H1 from the new filename
         if (this.settings?.syncFromFilename && !this.isUntitled(file.basename)) {
@@ -291,6 +403,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     this.syncingFiles.clear();
     this.debounceTimeouts.clear();
     this.recentlyDeleted.clear();
+    this.recentlyRenamedFiles.clear();
   }
 
   private trySyncOnSave(): void {
@@ -548,25 +661,48 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     this.syncingFiles.add(file.path);
 
     try {
-      const { title: currentTitle, h1: currentH1, fileCache } = await this.getLiveTitleAndH1(file);
+      let content = "";
+      const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+      const isEditorOpen = activeView && activeView.file && activeView.file.path === file.path && activeView.editor;
 
-      let titleUpdated = false;
-      let h1Updated = false;
-
-      if (this.settings.syncTitle && currentTitle !== newTitle) {
-        await this.updateFrontMatterTitle(file, newTitle);
-        titleUpdated = true;
+      if (isEditorOpen && activeView.editor) {
+        content = activeView.editor.getValue();
       }
 
-      if (currentH1 !== newTitle) {
-        const freshCache = titleUpdated ? this.app.metadataCache.getFileCache(file) : fileCache;
-        await this.updateH1InFile(file, freshCache, newTitle);
-        h1Updated = true;
+      if (!content) {
+        try {
+          content = await this.app.vault.read(file);
+        } catch (readErr) {
+          console.warn("Title H1 Filename Sync: vault.read retry in 200ms:", readErr);
+          await new Promise((res) => window.setTimeout(res, 200));
+          const fresh = this.app.vault.getAbstractFileByPath(file.path);
+          if (fresh instanceof TFile) {
+            content = await this.app.vault.read(fresh);
+          }
+        }
       }
 
-      const finalTitle = titleUpdated ? newTitle : currentTitle;
-      const finalH1 = h1Updated ? newTitle : currentH1;
-      this.lastKnownState.set(file.path, { title: finalTitle, h1: finalH1 });
+      if (!content) return;
+
+      const { newContent, changed } = updateContentTitleAndH1(content, newTitle, this.settings.syncTitle);
+
+      if (changed) {
+        if (isEditorOpen && activeView.editor) {
+          activeView.editor.setValue(newContent);
+        }
+        const fresh = this.app.vault.getAbstractFileByPath(file.path);
+        const target = fresh instanceof TFile ? fresh : file;
+        await this.app.vault.modify(target, newContent);
+      }
+
+      this.lastKnownState.set(file.path, {
+        title: this.settings.syncTitle ? newTitle : (this.lastKnownState.get(file.path)?.title || ""),
+        h1: newTitle,
+      });
+
+      if (changed && this.settings.showRenameNotice) {
+        new Notice(`Updated note H1 and title to match filename "${newTitle}"`);
+      }
     } catch (err) {
       console.error("Title H1 Filename Sync: error updating title and H1 from filename:", err);
     } finally {
