@@ -2,5 +2,6 @@
   "disallowedChars": "*\"\\\\/<>:|?",
   "syncOnSave": true,
   "syncFilename": true,
-  "syncTitle": true
+  "syncTitle": true,
+  "syncFromFilename": false
 }

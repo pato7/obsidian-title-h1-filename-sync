@@ -16,6 +16,7 @@ interface TitleH1FilenameSyncSettings {
   syncFilename: boolean;
   syncTitle: boolean;
   showRenameNotice: boolean;
+  syncFromFilename: boolean;
 }
 
 const DEFAULT_SETTINGS: TitleH1FilenameSyncSettings = {
@@ -24,6 +25,7 @@ const DEFAULT_SETTINGS: TitleH1FilenameSyncSettings = {
   syncFilename: true,
   syncTitle: true,
   showRenameNotice: false,
+  syncFromFilename: false,
 };
 
 interface FileTitleState {
@@ -97,7 +99,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
 
     // Register rename and delete events to update our state cache
     this.registerEvent(
-      this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+      this.app.vault.on("rename", async (file: TAbstractFile, oldPath: string) => {
         // Update lastKnownState map key
         if (this.lastKnownState.has(oldPath)) {
           const state = this.lastKnownState.get(oldPath) as FileTitleState;
@@ -115,6 +117,29 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
           const timeout = this.debounceTimeouts.get(oldPath) as number;
           this.debounceTimeouts.delete(oldPath);
           this.debounceTimeouts.set(file.path, timeout);
+        }
+
+        if (!(file instanceof TFile) || file.extension !== "md") {
+          return;
+        }
+
+        // If the rename was initiated by our own plugin, do not sync back from filename
+        if (this.syncingFiles.has(oldPath) || this.syncingFiles.has(file.path)) {
+          return;
+        }
+
+        // Check if basename actually changed (not just moved to another directory)
+        const oldFilename = oldPath.split("/").pop() || "";
+        const oldBasename = oldFilename.endsWith(".md") ? oldFilename.slice(0, -3) : oldFilename;
+        const newBasename = file.basename;
+
+        if (oldBasename === newBasename) {
+          return;
+        }
+
+        // If option is enabled, sync title and H1 from filename
+        if (this.settings?.syncFromFilename) {
+          await this.syncTitleAndH1FromFilename(file, newBasename);
         }
       })
     );
@@ -419,6 +444,38 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     }
   }
 
+  async syncTitleAndH1FromFilename(file: TFile, newTitle: string): Promise<void> {
+    if (this.syncingFiles.has(file.path)) return;
+
+    this.syncingFiles.add(file.path);
+
+    try {
+      const { title: currentTitle, h1: currentH1, fileCache } = await this.getLiveTitleAndH1(file);
+
+      let titleUpdated = false;
+      let h1Updated = false;
+
+      if (this.settings.syncTitle && currentTitle !== newTitle) {
+        await this.updateFrontMatterTitle(file, newTitle);
+        titleUpdated = true;
+      }
+
+      if (currentH1 !== newTitle) {
+        const freshCache = titleUpdated ? this.app.metadataCache.getFileCache(file) : fileCache;
+        await this.updateH1InFile(file, freshCache, newTitle);
+        h1Updated = true;
+      }
+
+      const finalTitle = titleUpdated ? newTitle : currentTitle;
+      const finalH1 = h1Updated ? newTitle : currentH1;
+      this.lastKnownState.set(file.path, { title: finalTitle, h1: finalH1 });
+    } catch (err) {
+      console.error("Title H1 Filename Sync: error updating title and H1 from filename:", err);
+    } finally {
+      this.syncingFiles.delete(file.path);
+    }
+  }
+
   async updateFrontMatterTitle(file: TFile, newTitle: string): Promise<void> {
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       if (newTitle) {
@@ -434,35 +491,53 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
     const lines = content.split("\n");
     const h1HeadingObj = fileCache?.headings?.find((h) => h.level === 1);
 
-    if (h1HeadingObj) {
-      const lineIndex = h1HeadingObj.position.start.line;
-      if (lineIndex < lines.length && lines[lineIndex].trimStart().startsWith("# ")) {
-        const match = lines[lineIndex].match(/^(\s*)#\s/);
-        const prefix = match ? match[1] : "";
-        lines[lineIndex] = `${prefix}# ${newTitle}`;
-      } else {
-        const foundIdx = lines.findIndex((l) => l.trimStart().startsWith("# "));
-        if (foundIdx !== -1) {
-          const match = lines[foundIdx].match(/^(\s*)#\s/);
-          const prefix = match ? match[1] : "";
-          lines[foundIdx] = `${prefix}# ${newTitle}`;
-        } else {
-          let insertLine = 0;
-          if (fileCache?.frontmatterPosition) {
-            insertLine = fileCache.frontmatterPosition.end.line + 1;
-          }
-          lines.splice(insertLine, 0, "", `# ${newTitle}`);
-        }
-      }
+    let h1LineIndex = -1;
+    if (
+      h1HeadingObj &&
+      h1HeadingObj.position.start.line < lines.length &&
+      lines[h1HeadingObj.position.start.line].trimStart().startsWith("# ")
+    ) {
+      h1LineIndex = h1HeadingObj.position.start.line;
     } else {
-      let insertLine = 0;
-      if (fileCache?.frontmatterPosition) {
-        insertLine = fileCache.frontmatterPosition.end.line + 1;
-      }
-      lines.splice(insertLine, 0, "", `# ${newTitle}`);
+      h1LineIndex = lines.findIndex((l) => l.trimStart().startsWith("# "));
     }
 
-    await this.app.vault.modify(file, lines.join("\n"));
+    if (h1LineIndex !== -1) {
+      const match = lines[h1LineIndex].match(/^(\s*)#\s/);
+      const prefix = match ? match[1] : "";
+      lines[h1LineIndex] = `${prefix}# ${newTitle}`;
+    } else {
+      let insertLine = 0;
+      if (lines[0]?.trim() === "---") {
+        const closingIdx = lines.slice(1).findIndex((l) => l.trim() === "---");
+        if (closingIdx !== -1) {
+          insertLine = closingIdx + 2;
+        }
+      } else if (fileCache?.frontmatterPosition) {
+        insertLine = fileCache.frontmatterPosition.end.line + 1;
+      }
+
+      if (insertLine === 0) {
+        if (lines.length === 1 && lines[0].trim() === "") {
+          lines[0] = `# ${newTitle}`;
+        } else {
+          lines.splice(0, 0, `# ${newTitle}`, "");
+        }
+      } else {
+        lines.splice(insertLine, 0, "", `# ${newTitle}`);
+      }
+    }
+
+    try {
+      await this.app.vault.modify(file, lines.join("\n"));
+    } catch (err) {
+      console.warn("Title H1 Filename Sync: modify failed, retrying in 200ms:", err);
+      await new Promise((res) => window.setTimeout(res, 200));
+      const freshFile = this.app.vault.getAbstractFileByPath(file.path);
+      if (freshFile instanceof TFile) {
+        await this.app.vault.modify(freshFile, lines.join("\n"));
+      }
+    }
   }
 
   async syncFilename(file: TFile, targetTitle: string, showNotice = false): Promise<void> {
@@ -493,6 +568,7 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
       }
 
       console.log(`Title H1 Filename Sync: renaming "${freshFile.path}" -> "${newPath}"`);
+      this.syncingFiles.add(newPath);
       try {
         await this.app.fileManager.renameFile(freshFile, newPath);
       } catch (renameErr) {
@@ -501,6 +577,10 @@ export default class TitleH1FilenameSyncPlugin extends Plugin {
         const retry = this.app.vault.getAbstractFileByPath(freshFile.path);
         const retryFile = retry instanceof TFile ? retry : freshFile;
         await this.app.fileManager.renameFile(retryFile, newPath);
+      } finally {
+        window.setTimeout(() => {
+          this.syncingFiles.delete(newPath);
+        }, 500);
       }
 
       if (showNotice) {
@@ -579,6 +659,16 @@ class TitleH1FilenameSyncSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.syncFilename).onChange(async (value) => {
           this.plugin.settings.syncFilename = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Update title and H1 on filename change")
+      .setDesc("If enabled, renaming a file will automatically update the note's H1 heading and frontmatter title to match the new filename.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.syncFromFilename).onChange(async (value) => {
+          this.plugin.settings.syncFromFilename = value;
           await this.plugin.saveSettings();
         })
       );
